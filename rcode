@@ -1,0 +1,121 @@
+
+
+library(bsts)
+library(tidyquant)
+library(tidyverse)
+library(Metrics)
+select<-dplyr::select
+
+#################################################
+#Example 1
+data(goog)
+ts.plot(goog)
+ret<-na.omit(Return.calculate(goog))
+plot(ret)
+
+ss <- AddSemilocalLinearTrend(list(), ret)
+ss<-AddLocalLevel(ss,ret)
+ss<-AddAr(ss,ret,lags = 24)
+ss <- AddSemilocalLinearTrend(ss, ret)
+model <- bsts(ret, state.specification = ss, niter = 500)
+pred <- predict(model, horizon = 10, burn = 50)
+plot(model)
+plot(pred)
+plot(model,'residuals')
+plot(model,"components")
+plot(model, "forecast.distribution", burn = 100)
+plot(model,"coef")
+
+
+
+
+#################################################
+#################################################
+#Example 2
+
+getSymbols("SPY",src = "yahoo")
+spy<-cbind.data.frame(index(SPY),SPY$SPY.Adjusted)
+colnames(spy)<-c("date","adjusted_close")
+
+
+# 2. Create returns and lagged returns.
+SPY <- spy %>% 
+  mutate(daily_return=ifelse(row_number()==1,0,adjusted_close/lag(adjusted_close,1)-1), 
+         daily_return_lag1 = lag(daily_return, 1), 
+         daily_return_lag2 = lag(daily_return, 2), 
+         daily_return_lag3 = lag(daily_return, 3), 
+         daily_return_lag4 = lag(daily_return, 4), 
+         daily_return_lag5 = lag(daily_return, 5), 
+         daily_return_lag6 = lag(daily_return, 6), 
+         daily_return_lag7 = lag(daily_return, 7), 
+         daily_return_lag8 = lag(daily_return, 8), 
+         daily_return_lag9 = lag(daily_return, 9), 
+         daily_return_lag10 = lag(daily_return, 10),
+         daily_return_lag11 = lag(daily_return, 11),
+         daily_return_lag12 = lag(daily_return, 12),
+         daily_return_lag30 = lag(daily_return, 30),
+         daily_return_lag60 = lag(daily_return, 60),
+         daily_return_lag90 = lag(daily_return, 90)
+         )
+
+
+training<-SPY %>% filter(date <= "2016-12-31") %>% na.omit(.)
+testing <- SPY %>% filter(date >= "2017-01-01") %>% na.omit(.)
+
+bsts_train<-training[,4:ncol(training)]
+bsts_test<-testing[,4:ncol(testing)]
+
+y=training$daily_return
+
+prior <- SpikeSlabPrior(x=model.matrix(y~.,data=bsts_train),y=y)
+
+model_components <- list()
+summary(model_components <- AddLocalLinearTrend(model_components,y=y))
+summary(model_components <- AddSeasonal(model_components,y=y,nseasons=12))
+#summary(model_components <- AddAr(model_components,y=y,lags=12))
+#summary(model_components <- AddAutoAr(model_components,y=y,lags = 60))
+
+
+model <- bsts(y ~ .,
+              state.specification = model_components,
+              data = bsts_train,
+              #data=training,
+              #prior = prior,
+              seed = 1234567,
+              niter = 1000,
+              expected.model.size = ncol(bsts_train)/2)
+
+
+plot(model,"coef")
+
+varimp<-as.data.frame(model$coefficients)
+
+training_pred <- predict(model,
+                         newdata = bsts_train
+                         #newdata = training
+)
+
+testing_pred <- predict(model,
+                        newdata = bsts_test
+                        #newdata = testing
+)
+
+bsts_training_preds<- training %>% select(date,daily_return) %>%
+  mutate(pred=training_pred$mean)
+cor(bsts_training_preds$daily_return,bsts_training_preds$pred)^2
+rmse(bsts_training_preds$daily_return,bsts_training_preds$pred)
+
+
+bsts_testing_preds<- testing %>% select(date,daily_return) %>%
+  mutate(pred=testing_pred$mean)
+cor(bsts_testing_preds$daily_return,bsts_testing_preds$pred)^2
+rmse(bsts_testing_preds$daily_return,bsts_testing_preds$pred)
+
+bsts_preds_final<-rbind.data.frame(bsts_training_preds,bsts_testing_preds)
+
+bsts_preds_final_xts<-as.xts(bsts_preds_final[,-1],order.by=bsts_preds_final$date)
+
+plot(bsts_preds_final_xts)
+
+
+#################################################
