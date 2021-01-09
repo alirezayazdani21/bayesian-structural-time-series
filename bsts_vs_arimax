@@ -86,7 +86,7 @@ ggplot(all_pred,aes(x=ds, y=prediction, col=model, linetype=model, size=model ))
   scale_color_manual(values=c("blue","red","black"))+
   ggtitle(label=c("Single-Family Residential Mortgage Delinquency Rate"),
           subtitle=c("ARIMAX vs. BSTS, with lagged unemployment rate regressor"))+
-  geom_vline(xintercept = as.numeric(as.Date("2017-01-01")), linetype=5,color = "lightblue")
+  geom_vline(xintercept = as.numeric(as.Date("2016-01-01")), linetype=5,color = "lightblue")
 
 #####################################
 #####################################
