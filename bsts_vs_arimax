@@ -1,0 +1,147 @@
+
+library(quantmod)
+library(bsts)
+library(forecast)
+library(dplyr)
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+
+options(scipen=999,digits=3)
+###################################
+#Delinquency Rate on Single-Family Residential Mortgages, Booked in Domestic Offices, All Commercial Banks
+getSymbols("DRSFRMACBS",src="FRED")
+DRSF <- to.quarterly(log(DRSFRMACBS),indexAt="yearqtr",OHLC=F)['1991/2020']
+colnames(DRSF)<-"DRSF"
+
+#Unemployment rate
+getSymbols("UNRATE",src="FRED")
+UNEMPL2 <- to.quarterly(log(lag.xts(UNRATE,2)),indexAt="yearqtr",OHLC=F)['1991/2020']
+colnames(UNEMPL2)<-"UNEMPL2"
+
+#Merge and rename
+DF<-fortify.zoo(cbind.xts(DRSF,UNEMPL2)) %>% mutate(year=year(Index)) %>% na.omit(.)
+colnames(DF)<-c("ds","y","x","year")
+DF$ds<-as.Date(DF$ds)
+
+#Train vs Test split
+DF_tr<- DF %>% filter(year <= 2015)
+DF_te<-DF %>% filter(year >= 2016)
+
+###################################
+###################################
+#ARIMA(X)
+set.seed(1234567)
+arima_tr<- auto.arima(DF_tr$y, ic="aic", xreg=DF_tr$x)
+summary(arima_tr)
+lmtest::coeftest(arima_tr)
+arima_te<-forecast(arima_tr,h=length(DF_te$y),xreg=DF_te$x)
+
+###################################
+###################################
+#BSTS
+ss <- AddAr(list(),DF_tr$y,lag=1)
+ss <- AddLocalLinearTrend(ss,DF_tr$y)
+ss <- AddSemilocalLinearTrend(ss, DF_tr$y)
+ss <- AddLocalLevel(ss,DF_tr$y)
+bsts_model <- bsts(y ~ x, 
+                   data=DF_tr,
+                   state.specification = ss, 
+                   niter = 7000,
+                   seed=12345,
+                   ping=0)
+
+burn<-SuggestBurn(0.1, bsts_model)
+bsts_res<- as.numeric(residuals(bsts_model,burn=burn,mean.only=T))
+
+acf(bsts_res)
+Box.test(bsts_res)
+
+bsts_tr<- data.frame(as.numeric(DF_tr$y)- as.numeric(bsts_res))
+colnames(bsts_tr)<-"BSTS"
+
+bsts_te<- data.frame(predict(bsts_model , newdata=DF_te)$mean)
+colnames(bsts_te)<-"BSTS"
+
+
+###################################
+gc(reset=T)
+
+tr_pred<- DF_tr %>% mutate(sample="tr")
+tr_pred$arima<-as.numeric(arima_tr$fitted)
+tr_pred$bsts<-as.numeric(bsts_tr$BSTS)
+
+te_pred<- DF_te %>% mutate(sample="te")
+te_pred$arima<-as.numeric(arima_te$mean)
+te_pred$bsts<-as.numeric(bsts_te$BSTS)
+
+all_pred<-rbind.data.frame(tr_pred,te_pred) %>% select(ds,y,arima,bsts) %>% 
+  pivot_longer(!ds,names_to = "model", values_to = "prediction") 
+
+###################################
+ggplot(all_pred,aes(x=ds, y=prediction, col=model, linetype=model, size=model ))+
+  geom_line()+
+  scale_linetype_manual(values=c("solid","dashed","solid"))+
+  scale_size_manual(values=c(1,1.1,1))+
+  scale_color_manual(values=c("blue","red","black"))+
+  ggtitle(label=c("Single-Family Residential Mortgage Delinquency Rate"),
+          subtitle=c("ARIMAX vs. BSTS, with lagged unemployment rate regressor"))+
+  geom_vline(xintercept = as.numeric(as.Date("2017-01-01")), linetype=5,color = "lightblue")
+
+#####################################
+#####################################
+library(gt)
+library(Metrics)
+
+metrics_grp<-function(x,y){
+  round(rbind(
+    mape(x,y),
+    mae(x,y),
+    rmse(x,y),
+    mase(x,y),
+    sse(x,y)
+  ),2)
+}
+
+metrics_df<-rbind.data.frame("MAPE",
+                             "MAE",
+                             "RMSE",
+                             "MASE",
+                             "SSE"
+)
+colnames(metrics_df)<-"Metric"
+
+metrics_df<- metrics_df %>% 
+  mutate(Arima_train=metrics_grp(tr_pred$y,tr_pred$arima),
+         BSTS_train=metrics_grp(tr_pred$y,tr_pred$bsts),
+
+         Arima_test=metrics_grp(te_pred$y,te_pred$arima),    
+         BSTS_test=metrics_grp(te_pred$y,te_pred$bsts)
+  ) 
+
+
+gt(metrics_df) %>% 
+  tab_header(title = "Arima vs. BSTS") %>%
+  tab_style(
+    style = cell_text(style = "italic",weight="bold"),
+    locations = cells_body(columns = vars(Metric))
+  ) %>% 
+  tab_style(
+    style = cell_text(style = "italic",weight="bold"),
+    locations = cells_column_labels(columns = 1:5)
+  ) %>% 
+  tab_style(
+    style = cell_fill(color = "gray85"),
+    locations = cells_body(columns = 2:3)
+  ) %>% 
+  tab_style(
+    style = cell_fill(color = "lightblue"),
+    locations = cells_body(columns = 4:5)
+  ) 
+
+#######################################
+acf(arima_tr$residuals)
+acf(bsts_res)
+
+
+
